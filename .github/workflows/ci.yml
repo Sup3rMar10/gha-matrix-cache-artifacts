@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # supersede old PR runs, never main
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false            # one failing combination must not hide the others
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    defaults:
+      run:
+        shell: bash               # same shell syntax on both operating systems
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip              # caches ~/.cache/pip keyed on the requirements file hash
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - run: mkdir results && python -m pytest --junitxml=results/junit-${{ matrix.os }}-py${{ matrix.python }}.xml
+      - uses: actions/upload-artifact@v7
+        if: always()              # keep the results of a failed run: that is when you need them
+        with:
+          name: junit-${{ matrix.os }}-py${{ matrix.python }}
+          path: results/*.xml
+          retention-days: 7
+
+  summary:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: junit-*
+          merge-multiple: true
+          path: all-results
+      - name: Combine results into the job summary
+        run: python3 scripts/summarize.py all-results >> "$GITHUB_STEP_SUMMARY"
